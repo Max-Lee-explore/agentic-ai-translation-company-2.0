@@ -253,8 +253,10 @@ def terminology_prompt(translation: str, source_lang: str, target_lang: str, ter
 
 def memory_prompt(chunk: str, final: str, source_lang: str, target_lang: str, known: str,
                   overrides: Optional[Dict[str, str]] = None, profile: Optional[Dict] = None):
-    """Editor extracts rendering decisions from a finished passage into the job's shared memory."""
-    system = _system("editor_improve", overrides, source_lang, target_lang, profile)
+    """Editor extracts rendering decisions from a finished passage into the job's shared memory.
+
+    Only the identity prompt is used: this is bookkeeping, so the long style skills would only add cost."""
+    system = _sys("editor_improve", overrides)
     user = _join(
         f"From this finished {source_lang} → {target_lang} passage, list the rendering decisions later passages "
         "must reuse for consistency: names of people, places and organisations; recurring terms or concepts NOT "
