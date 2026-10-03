@@ -109,11 +109,14 @@ export default function App() {
         live.total = ev.chunks;
         break;
       case 'translate_started':
-        live.translating.set(ev.worker, { worker: ev.worker, chunk: ev.chunk });
+        live.translating.set(ev.worker, { worker: ev.worker, chunk: ev.chunk, redo: !!ev.redo });
         break;
       case 'translate_done':
         live.translating.delete(ev.worker);
-        live.translated += 1;
+        if (!ev.redo) live.translated += 1;
+        break;
+      case 'revision_requested':
+        live.editing = null;
         break;
       case 'review_started':
       case 'improve_started':
@@ -136,8 +139,8 @@ export default function App() {
     }
     const parts = [];
     if (live.translating.size === 1) {
-      const [{ worker, chunk }] = live.translating.values();
-      parts.push(`${TEAM_MEMBER_LABEL(worker)} is translating chunk ${chunk + 1}`);
+      const [{ worker, chunk, redo }] = live.translating.values();
+      parts.push(`${TEAM_MEMBER_LABEL(worker)} is ${redo ? 'redoing' : 'translating'} chunk ${chunk + 1}`);
     } else if (live.translating.size > 1) {
       parts.push(`${live.translating.size} translators working in parallel`);
     }
@@ -192,6 +195,9 @@ export default function App() {
         case 'improve_started':
           if (allTranslated) next.activeStep = 'edit';
           next.activity = summary();
+          break;
+        case 'revision_requested':
+          next.activity = `The Editor sent chunk ${ev.chunk + 1} back to the translator for a redo`;
           break;
         case 'improve_done':
           if (allEdited) {

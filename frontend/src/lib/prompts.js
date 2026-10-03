@@ -1,5 +1,5 @@
 /**
- * Default role prompts — must match DEFAULT_SYSTEM_PROMPTS in backend/app/prompts.py.
+ * Default role prompts — must match the identity paragraph of each backend/agents/<role>/AGENT.md.
  * Editable in Studio settings; only edited prompts are sent with a job. The backend always
  * appends the naturalness standard and language-pair notes after whichever prompt is used.
  */

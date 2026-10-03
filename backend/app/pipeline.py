@@ -12,9 +12,11 @@ from typing import Callable, Dict, List, Optional
 
 from . import files
 from .company import DOMAINS, TEAMS, team_for_domain
+from .runtime.memory import JobMemory
 
 EDITOR_SLOTS = 2
 TERMINOLOGIST_SLOTS = 2
+MAX_REVISIONS = 1   # how many times the editor may send one passage back to the translator
 
 
 @dataclass
@@ -117,10 +119,12 @@ async def run_job(job: Job, brain, emit: Callable[[dict], None]):
         editor_q: asyncio.Queue = asyncio.Queue()
         term_q: asyncio.Queue = asyncio.Queue()
         for i in range(total):
-            translate_q.put_nowait(i)
+            translate_q.put_nowait((i, None))
         drafts: Dict[int, str] = {}
         edited: Dict[int, str] = {}
-        state = {"completed": 0}
+        rounds: Dict[int, int] = {}
+        state = {"completed": 0, "cleared_review": 0}
+        memory = JobMemory()
 
         profile = {
             "target_reader": analysis.get("target_reader", ""),
@@ -137,28 +141,48 @@ async def run_job(job: Job, brain, emit: Callable[[dict], None]):
                 return {}
             return {"prev_source": chunks[i - 1], "prev_target": edited.get(i - 1) or drafts.get(i - 1, "")}
 
-        def finish(i: int, final_text: str):
+        def memory_for(i: int) -> str:
+            return memory.render(chunks[i])
+
+        async def finish(i: int, final_text: str):
             finals[i] = final_text
+            # Record names/terms/tone choices so later passages stay consistent.
+            added = memory.add(
+                await brain.remember(chunks[i], final_text, job.source_lang, job.target_lang,
+                                     memory.render(), profile=profile),
+                job.glossary,
+            )
+            if added:
+                send("memory_updated", chunk=i, added=len(added), total_entries=len(memory.decisions))
             state["completed"] += 1
             send("chunk_completed", chunk=i, completed=state["completed"], total=total)
 
+        async def cleared_review():
+            # Once every passage is past review, no more redos can come back: release the translators.
+            state["cleared_review"] += 1
+            if state["cleared_review"] == total:
+                for _ in workers:
+                    await translate_q.put(STOP)
+
         async def translator(worker: str):
             while True:
-                try:
-                    i = translate_q.get_nowait()
-                except asyncio.QueueEmpty:
+                item = await translate_q.get()
+                if item is STOP:
                     return
+                i, feedback = item
                 terms = terms_for(i)
                 send("translate_started", chunk=i, total=total, worker=worker, terms=len(terms),
-                     style_sheet=bool(job.style_sheet))
+                     style_sheet=bool(job.style_sheet), redo=feedback is not None)
                 draft = await brain.translate(
                     domain, chunks[i], i, total, job.source_lang, job.target_lang,
                     guidelines, terms, job.style_sheet, profile=profile, context=context_for(i),
+                    memory=memory_for(i), feedback=feedback,
                 )
                 drafts[i] = draft
                 chunk_details[i]["translator"] = worker
-                chunk_details[i]["steps"].append({"step": "Translation", "agent": worker, "result": draft})
-                send("translate_done", chunk=i, total=total, worker=worker)
+                step = "Translation (redo)" if feedback else "Translation"
+                chunk_details[i]["steps"].append({"step": step, "agent": worker, "result": draft})
+                send("translate_done", chunk=i, total=total, worker=worker, redo=feedback is not None)
                 await editor_q.put(i)
 
         async def editor(slot: int):
@@ -167,17 +191,27 @@ async def run_job(job: Job, brain, emit: Callable[[dict], None]):
                 if i is STOP:
                     return
                 terms = terms_for(i)
-                send("review_started", chunk=i, total=total, slot=slot)
-                notes = await brain.review(
+                rounds[i] = rounds.get(i, 0) + 1
+                send("review_started", chunk=i, total=total, slot=slot, round=rounds[i])
+                notes, verdict = await brain.review(
                     chunks[i], drafts[i], job.source_lang, job.target_lang, guidelines, requirements,
-                    terms, job.style_sheet, profile=profile,
+                    terms, job.style_sheet, profile=profile, memory=memory_for(i), round_no=rounds[i],
                 )
-                chunk_details[i]["steps"].append({"step": "Editor review", "agent": "editor", "result": notes})
-                send("review_done", chunk=i, total=total, slot=slot)
+                chunk_details[i]["steps"].append(
+                    {"step": f"Editor review (round {rounds[i]})", "agent": "editor", "result": notes}
+                )
+                send("review_done", chunk=i, total=total, slot=slot, round=rounds[i], verdict=verdict)
+                if verdict == "revise" and rounds[i] <= MAX_REVISIONS:
+                    # Critique → redo: send the passage back to the translators with the notes.
+                    send("revision_requested", chunk=i, total=total, round=rounds[i],
+                         worker=chunk_details[i].get("translator"))
+                    await translate_q.put((i, {"draft": drafts[i], "notes": notes}))
+                    continue
+                await cleared_review()
                 send("improve_started", chunk=i, total=total, slot=slot)
                 improved = await brain.improve(
                     chunks[i], drafts[i], notes, job.source_lang, job.target_lang, terms, job.style_sheet,
-                    profile=profile, context=context_for(i),
+                    profile=profile, context=context_for(i), memory=memory_for(i),
                 )
                 edited[i] = improved
                 chunk_details[i]["steps"].append({"step": "Editor revision", "agent": "editor", "result": improved})
@@ -185,7 +219,7 @@ async def run_job(job: Job, brain, emit: Callable[[dict], None]):
                 if job.glossary:
                     await term_q.put(i)
                 else:
-                    finish(i, improved)
+                    await finish(i, improved)
 
         async def terminologist(slot: int):
             while True:
@@ -202,7 +236,7 @@ async def run_job(job: Job, brain, emit: Callable[[dict], None]):
                     checked = edited[i]
                 chunk_details[i]["steps"].append({"step": "Terminology check", "agent": "terminologist", "result": checked})
                 send("terms_done", chunk=i, total=total, terms=len(terms), changed=checked != edited[i], slot=slot)
-                finish(i, checked)
+                await finish(i, checked)
 
         async def translators_stage():
             await asyncio.gather(*(translator(w) for w in workers))
@@ -250,6 +284,8 @@ async def run_job(job: Job, brain, emit: Callable[[dict], None]):
             "term_base": {"file": job.glossary_name, "entries": len(job.glossary or {})},
             "style_sheet": {"file": job.style_sheet_name, "provided": bool(job.style_sheet)},
             "chunks": chunk_details,
+            "memory": memory.as_list(),
+            "revisions": sum(1 for r in rounds.values() if r > 1),
             "usage": {
                 "calls": usage.calls if usage else 0,
                 "input_tokens": usage.input_tokens if usage else 0,

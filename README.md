@@ -53,6 +53,15 @@ Open http://localhost:5173. Without an API key the app runs in **Demo mode**: th
 
 Every translator and editor follows a shared **naturalness standard** (no translationese, no unnecessary transliteration, target-locale conventions), with extra notes for **English ↔ Traditional Chinese** (Taiwan and Hong Kong).
 
+### Agents, skills and memory
+
+- **`backend/agents/<role>/AGENT.md`** — one file per role: identity, temperature, team, rules, the skills it uses (and, later, the tools it may call). Edit a file to change how that role works.
+- **`backend/skills/<skill>/SKILL.md`** — reusable know-how (naturalness standard, EN → Traditional Chinese, zh-TW / zh-HK localisation, Chinese → EN). A skill is only loaded when the job's language pair and locale match it.
+- **Review loop** — the Editor ends each review with `VERDICT: PASS` or `VERDICT: REVISE`. On REVISE, the passage goes back to the translator with the notes (at most once), then returns for a second review.
+- **Job memory** — after each passage is finished, the Editor records names, recurring terms and tone choices, and later passages reuse them. The term base always wins.
+
+Run the pipeline test (no API key needed): `cd backend && .venv/bin/python -m tests.test_agent_loop`.
+
 Regenerate the diagram with `python docs/workflow_diagram.py` (needs Graphviz).
 
 ## Office cast

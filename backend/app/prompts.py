@@ -3,150 +3,33 @@ import re
 from typing import Dict, List, Optional
 
 from .company import DOMAINS
+from .runtime import registry
 
 STYLE_SHEET_LIMIT = 6000
 CONTEXT_CHARS = 400
 
-# Role identities. Users can override these in Studio settings; the naturalness
-# rules and language-pair notes below are appended in code so they always apply.
-DEFAULT_SYSTEM_PROMPTS = {
-    "manager": (
-        "You are the Project Manager of a boutique translation company. You read the client's brief, "
-        "study the source text, work out who will read the translation, and decide which specialist "
-        "handles the job. You are warm with clients and precise with your team."
-    ),
-    "literary": (
-        "You are a Literary Translation Specialist experienced with fiction, poetry and creative non-fiction. "
-        "You recreate the author's voice, rhythm and imagery so the text reads as if it had been written "
-        "in the target language."
-    ),
-    "marketing": (
-        "You are a Marketing & Transcreation Specialist. You rewrite copy so it persuades native readers "
-        "of the target market as strongly as the original persuades its own, keeping the brand voice."
-    ),
-    "legal": (
-        "You are a Legal Translation Specialist. You render exact legal meaning using the drafting "
-        "conventions and established terminology of the target legal system."
-    ),
-    "business": (
-        "You are a Business & Corporate Translation Specialist. You write clear, professional copy in the "
-        "phrasing native business writers actually use, with figures and metrics exact."
-    ),
-    "academic": (
-        "You are an Academic Translation Specialist. You keep scholarly rigour and hedging while writing "
-        "in the conventions of academic prose in the target language."
-    ),
-    "technical": (
-        "You are a Technical Documentation Translation Specialist. You produce precise, unambiguous "
-        "documentation that reads like it was written natively for target-language users."
-    ),
-    "medical": (
-        "You are a Medical Translation Specialist. Clinical accuracy and patient safety come first; you use "
-        "the terminology and phrasing native clinicians and patient materials actually use."
-    ),
-    "news": (
-        "You are a News & Journalism Translation Specialist. You write in the house style of a quality "
-        "target-language newsroom: clear, factual and concise, with attribution and quotes accurate."
-    ),
-    "master": (
-        "You are a Master Translator with decades of experience across every genre. You identify each "
-        "register in mixed content and write each one as a native expert in that register would."
-    ),
-    "editor_review": (
-        "You are the Senior Editor of a translation company. You review drafts rigorously and constructively, "
-        "with a sharp ear for anything that sounds translated rather than natively written."
-    ),
-    "editor_improve": (
-        "You are the Senior Editor of a translation company. You turn reviewed drafts into polished final "
-        "copy that reads as if it were originally written in the target language."
-    ),
-    "terminologist": (
-        "You are the Terminologist of a translation company. You enforce the client's term base exactly "
-        "while keeping every sentence grammatical and natural."
-    ),
-}
-
-NATURALNESS_RULES = """Naturalness standard (applies to every translation):
-- Translate meaning, intent and effect — not words. Write what a skilled native writer of the target language would write for the same readers and purpose.
-- Restructure freely: split or merge sentences, reorder clauses, change parts of speech, switch active/passive, and turn nouns into verbs whenever the target language prefers it. Never mirror source word order or sentence boundaries just because they are there.
-- Avoid translationese: calques and word-for-word phrasing, stacked abstract nouns ("the implementation of the improvement of…"), long chains of pre-modifiers, unnecessary pronouns and possessives, overuse of the passive, source-language connectors and punctuation carried over mechanically.
-- Idioms, metaphors and set phrases: use the target language's own equivalent; if none exists, express the meaning plainly. Never translate an idiom literally.
-- No transliteration where an established target-language form exists. Use the conventional target-language names for places, organisations, people with established renderings, concepts, units and titles. Only transliterate proper names that have no accepted equivalent, and never leave source-language words untranslated unless the term base, style sheet or brief requires it.
-- Follow target-locale conventions for punctuation, quotation marks, numbers, dates, currencies and units.
-- Do not add, drop or soften meaning. Natural does not mean loose: every fact, nuance, qualification and obligation must survive.
-- Before answering, reread your translation as a native reader who has never seen the source. Rewrite anything that sounds translated."""
-
-_ZH_COMMON_TARGET = """English → Chinese pitfalls to eliminate:
-- 被 overuse: English passives usually become active voice, topic–comment structure, or 受到／獲得／遭 only where idiomatic.
-- Long 的-chains and heavy pre-modifiers: break long English noun phrases into short clauses; rarely allow more than two 的 in one phrase.
-- 當……時／當……的時候 for every "when"; 作為 at the start of sentences; 透過／通過 for every "through/by"; 對於／關於 openers — use only where a native writer would.
-- Empty verbs + nouns (進行討論, 作出決定, 加以改善, 予以處理): use the plain verb (討論, 決定, 改善, 處理).
-- 一個／一種 for every "a/an"; 他／她／它／他們 for every pronoun — Chinese drops pronouns that are clear from context.
-- Calques such as 在……方面, 在……的情況下, 基於……的考量, 是……的 framings, 「為……所……」, 「使得」 chains, 「具有……性」 — rewrite into direct Chinese.
-- Keep English-style clause order only when it reads naturally; Chinese usually puts time, condition and cause before the main clause and the conclusion last.
-- Punctuation: full-width （，。、；：？！）, 「」 for primary quotes and 『』 for nested quotes, ⋯⋯ for ellipsis, —— for dashes; no half-width punctuation inside Chinese text.
-- Use established Chinese names for people, places, companies and brands when they exist; do not invent phonetic transliterations for names that already have a conventional form."""
-
-_ZH_TW = """Locale: Traditional Chinese for Taiwan (zh-TW).
-- Use Taiwan vocabulary: 軟體, 硬體, 網路, 影片, 資訊, 品質, 程式, 伺服器, 預設, 檔案, 滑鼠, 行動電話／手機, 計程車, 捷運, 專案, 介面, 列印, 支援, 解析度.
-- Avoid Mainland and Hong Kong usage (軟件, 網絡, 視頻, 信息, 質量, 默認, 文件 for "file", 的士, 港鐵, 項目 for "project").
-- Use Taiwan Ministry of Education standard character forms (e.g. 裡, 線); for 台／臺 follow the style sheet, otherwise use 台 consistently."""
-
-_ZH_HK = """Locale: Traditional Chinese for Hong Kong (zh-HK), written standard Chinese (書面語), not Cantonese colloquial, unless the brief asks for Cantonese.
-- Use Hong Kong vocabulary: 軟件, 硬件, 網絡, 影片, 資訊, 質素, 程式, 伺服器, 預設, 檔案, 的士, 港鐵, 項目, 流動電話, 打印, 支援, 解像度.
-- Avoid Taiwan-only usage (軟體, 網路, 品質 for "quality", 捷運, 計程車, 專案) and Mainland usage (視頻, 信息, 質量, 默認).
-- Use Hong Kong government and legal terminology where relevant (e.g. 條例, 附例, 特區政府, 立法會) and Hong Kong forms of names and places.
-- Character forms: Hong Kong commonly uses 裏 and 綫; follow the style sheet if it specifies, otherwise use one form consistently."""
-
-_ZH_TRAD_GENERIC = """Locale: Traditional Chinese. If the brief or manager notes indicate Taiwan or Hong Kong, use that region's vocabulary consistently; otherwise default to Taiwan usage (軟體, 網路, 影片, 資訊, 品質). Never mix regional vocabularies within one document."""
-
-_ZH_TO_EN = """Chinese → English pitfalls to eliminate:
-- Do not follow Chinese topic–comment order or run-on comma-spliced sentences; recast into idiomatic English sentences with clear subjects and verbs.
-- Supply the subjects, articles, tense, number and connectors Chinese leaves implicit; choose them from context, not guesswork.
-- Four-character idioms (成語) and set phrases: render the meaning idiomatically (e.g. 一石二鳥 → "kill two birds with one stone", but 畫蛇添足 → "overdo it", not a literal snake story).
-- Remove redundancy that is stylistic in Chinese but padding in English (repeated subjects, paired synonyms like 認真負責, formulaic openers like 隨著……的發展).
-- Avoid Chinglish calques: "carry out the work of…", "strengthen the construction of…", "make great efforts to…", "under the leadership of…" stacks, "very" + adjective inflation.
-- Names: use established English names for organisations and places (e.g. 立法院 → Legislative Yuan, 行政院 → Executive Yuan, 立法會 → Legislative Council). For personal names use the person's own romanisation if known (Taiwan names often Wade–Giles style, Hong Kong names Cantonese romanisation); otherwise Hanyu Pinyin for Mainland names. Do not pinyin-transliterate names that have established English forms.
-- Convert Chinese punctuation to English punctuation; replace 「」 with English quotation marks."""
+# Role identities, rules and skills live in backend/agents/*/AGENT.md and backend/skills/*/SKILL.md.
+# Users can override an agent's identity paragraph in Studio settings; its skills always apply.
 
 
-def _is_trad_chinese(lang: str) -> bool:
-    lang = (lang or "").lower()
-    return "chinese" in lang and ("traditional" in lang or "taiwan" in lang or "hong kong" in lang)
-
-
-def _is_chinese(lang: str) -> bool:
-    lang = (lang or "").lower()
-    return "chinese" in lang or "mandarin" in lang or "cantonese" in lang
-
-
-def _locale_variant(target_lang: str, locale_hint: str) -> str:
-    text = f"{target_lang} {locale_hint}".lower()
-    if "hong kong" in text or "zh-hk" in text or "hk" in text.split():
-        return "hk"
-    if "taiwan" in text or "zh-tw" in text or "tw" in text.split():
-        return "tw"
-    return "generic"
-
-
-def language_pair_notes(source_lang: str, target_lang: str, locale_hint: str = "") -> str:
-    """Pair-specific naturalness notes appended to translator, editor and terminologist prompts."""
-    blocks: List[str] = []
-    if _is_trad_chinese(target_lang) and not _is_chinese(source_lang):
-        blocks.append(_ZH_COMMON_TARGET)
-        variant = _locale_variant(target_lang, locale_hint)
-        blocks.append({"tw": _ZH_TW, "hk": _ZH_HK}.get(variant, _ZH_TRAD_GENERIC))
-    elif _is_chinese(source_lang) and (target_lang or "").lower().startswith("english"):
-        blocks.append(_ZH_TO_EN)
-    return "\n\n".join(blocks)
+def default_prompts() -> Dict[str, str]:
+    return {a.id: a.prompt for a in registry.load_agents().values()}
 
 
 def _sys(key: str, overrides: Optional[Dict[str, str]] = None) -> str:
-    overrides = overrides or {}
-    custom = (overrides.get(key) or "").strip()
-    if custom:
-        return custom
-    return DEFAULT_SYSTEM_PROMPTS.get(key, DEFAULT_SYSTEM_PROMPTS["master"])
+    custom = ((overrides or {}).get(key) or "").strip()
+    return custom or registry.agent(key).prompt
+
+
+def skill_blocks(agent_id: str, source_lang: str, target_lang: str, locale_hint: str = "") -> str:
+    """Bodies of the agent's skills that apply to this language pair and locale."""
+    return "\n\n".join(s.body for s in registry.skills_for(agent_id, source_lang, target_lang, locale_hint))
+
+
+def _system(agent_id: str, overrides, source_lang: str, target_lang: str, profile: Optional[Dict], prefix: str = "") -> str:
+    locale_hint = (profile or {}).get("locale", "")
+    head = f"{_sys(agent_id, overrides)} {prefix}".strip()
+    return _join(head, skill_blocks(agent_id, source_lang, target_lang, locale_hint))
 
 
 def _bullets(items: List[str]) -> str:
@@ -199,6 +82,26 @@ def _context_block(context: Optional[Dict[str, str]]) -> str:
     return "\n".join(out)
 
 
+def _memory_block(memory: str) -> str:
+    if not (memory or "").strip():
+        return ""
+    return (
+        "Job memory — rendering decisions already made in earlier passages (reuse them exactly for consistency, "
+        f"unless the term base says otherwise):\n{memory}"
+    )
+
+
+def _feedback_block(feedback: Optional[Dict[str, str]]) -> str:
+    if not feedback:
+        return ""
+    return _join(
+        "The Senior Editor sent your previous draft back. Redo the passage, fixing every issue below while "
+        "keeping what was already right.",
+        f"Your previous draft:\n\"\"\"\n{feedback.get('draft', '')}\n\"\"\"",
+        f"Editor's notes:\n{feedback.get('notes', '')}",
+    )
+
+
 def _join(*blocks: str) -> str:
     return "\n\n".join(b for b in blocks if b and b.strip())
 
@@ -245,26 +148,26 @@ Reply with ONLY a JSON object:
 def translator_prompt(domain: str, chunk: str, index: int, total: int, source_lang: str, target_lang: str,
                       guidelines: List[str], terms: Dict[str, str], style_sheet: Optional[str],
                       overrides: Optional[Dict[str, str]] = None, profile: Optional[Dict] = None,
-                      context: Optional[Dict[str, str]] = None):
-    info = DOMAINS.get(domain, DOMAINS["master"])
-    base = _sys(domain if domain in DEFAULT_SYSTEM_PROMPTS else "master", overrides)
-    locale_hint = (profile or {}).get("locale", "")
-    system = _join(
-        f"{base} You translate from {source_lang} into {target_lang}, writing as a native {target_lang} "
+                      context: Optional[Dict[str, str]] = None, memory: str = "",
+                      feedback: Optional[Dict[str, str]] = None):
+    agent = registry.agent(domain)
+    system = _system(
+        agent.id, overrides, source_lang, target_lang, profile,
+        f"You translate from {source_lang} into {target_lang}, writing as a native {target_lang} "
         "professional would. Before finalising, you check your draft against the client's term base and "
         "style sheet, and reread it as a native reader.",
-        NATURALNESS_RULES,
-        language_pair_notes(source_lang, target_lang, locale_hint),
     )
     user = _join(
         f"Translate passage {index + 1} of {total} from {source_lang} into {target_lang}.",
-        f"Domain rules:\n{_bullets(info['guidelines'])}",
+        f"Domain rules:\n{_bullets(agent.rules)}",
         f"Project guidelines from the manager:\n{_bullets(guidelines)}",
         _reader_block(profile),
+        _memory_block(memory),
         _glossary_block(terms),
         _style_sheet_block(style_sheet),
         _context_block(context),
         f"Passage to translate:\n\"\"\"\n{chunk}\n\"\"\"",
+        _feedback_block(feedback),
         "Return ONLY the translated passage — no notes, no quotes, no preamble. Keep the paragraph breaks "
         "and headings of the source, but restructure sentences within each paragraph as freely as natural "
         f"{target_lang} requires.",
@@ -274,20 +177,18 @@ def translator_prompt(domain: str, chunk: str, index: int, total: int, source_la
 
 def review_prompt(chunk: str, draft: str, source_lang: str, target_lang: str, guidelines: List[str],
                   requirements: List[str], terms: Dict[str, str], style_sheet: Optional[str],
-                  overrides: Optional[Dict[str, str]] = None, profile: Optional[Dict] = None):
-    locale_hint = (profile or {}).get("locale", "")
-    system = _join(
-        _sys("editor_review", overrides),
-        NATURALNESS_RULES,
-        language_pair_notes(source_lang, target_lang, locale_hint),
-    )
+                  overrides: Optional[Dict[str, str]] = None, profile: Optional[Dict] = None,
+                  memory: str = "", round_no: int = 1):
+    system = _system("editor_review", overrides, source_lang, target_lang, profile)
     user = _join(
-        f"Review this {source_lang} → {target_lang} draft in two passes.",
+        f"Review this {source_lang} → {target_lang} draft in two passes."
+        + (f" This is review round {round_no}: the translator has already revised once." if round_no > 1 else ""),
         f"Draft:\n\"\"\"\n{draft}\n\"\"\"",
         f"Source:\n\"\"\"\n{chunk}\n\"\"\"",
         f"Project guidelines:\n{_bullets(guidelines)}",
         f"Quality requirements:\n{_bullets(requirements)}",
         _reader_block(profile),
+        _memory_block(memory),
         _glossary_block(terms),
         _style_sheet_block(style_sheet),
         f"""Pass 1 — Native read: read the draft on its own, as a native {target_lang} reader who has never seen the source. Flag every phrase that sounds translated: calques, literal idioms, unnatural word order, stacked nouns or modifiers, unnecessary pronouns/passives, transliterations where an established {target_lang} form exists, wrong-locale vocabulary, source-style punctuation.
@@ -297,27 +198,33 @@ Pass 2 — Fidelity check: compare against the source for mistranslations, omiss
 Format each issue as one bullet:
 - [Naturalness|Accuracy|Terminology|Style] "quoted problem text" → suggested natural rewrite (brief reason)
 
-Prioritise the most important issues (max ~15 bullets). If the draft already reads natively and is accurate, say so in one line.""",
+Prioritise the most important issues (max ~15 bullets). If the draft already reads natively and is accurate, say so in one line.
+
+Finish with exactly one verdict line:
+VERDICT: PASS — the draft is accurate; any remaining issues are polish the editor can fix directly.
+VERDICT: REVISE — there are mistranslations, omissions, additions or pervasive translationese that the translator must redo.""",
     )
     return system, user
+
+
+def parse_verdict(review: str) -> str:
+    """'revise' only on an explicit REVISE verdict; anything else (missing, malformed) passes."""
+    match = re.findall(r"VERDICT:\s*(PASS|REVISE)", review or "", flags=re.I)
+    return "revise" if match and match[-1].upper() == "REVISE" else "pass"
 
 
 def improve_prompt(chunk: str, draft: str, review: str, source_lang: str, target_lang: str,
                    terms: Dict[str, str], style_sheet: Optional[str],
                    overrides: Optional[Dict[str, str]] = None, profile: Optional[Dict] = None,
-                   context: Optional[Dict[str, str]] = None):
-    locale_hint = (profile or {}).get("locale", "")
-    system = _join(
-        _sys("editor_improve", overrides),
-        NATURALNESS_RULES,
-        language_pair_notes(source_lang, target_lang, locale_hint),
-    )
+                   context: Optional[Dict[str, str]] = None, memory: str = ""):
+    system = _system("editor_improve", overrides, source_lang, target_lang, profile)
     user = _join(
         f"Produce the final {target_lang} version of this passage using the review notes.",
         f"Source ({source_lang}):\n\"\"\"\n{chunk}\n\"\"\"",
         f"Draft:\n\"\"\"\n{draft}\n\"\"\"",
         f"Review notes:\n{review}",
         _reader_block(profile),
+        _memory_block(memory),
         _glossary_block(terms),
         _style_sheet_block(style_sheet),
         _context_block(context),
@@ -331,11 +238,7 @@ def improve_prompt(chunk: str, draft: str, review: str, source_lang: str, target
 
 def terminology_prompt(translation: str, source_lang: str, target_lang: str, terms: Dict[str, str],
                        overrides: Optional[Dict[str, str]] = None, profile: Optional[Dict] = None):
-    locale_hint = (profile or {}).get("locale", "")
-    system = _join(
-        _sys("terminologist", overrides),
-        language_pair_notes(source_lang, target_lang, locale_hint),
-    )
+    system = _system("terminologist", overrides, source_lang, target_lang, profile)
     user = _join(
         f"Check this {target_lang} translation against the term base and correct any deviations.",
         _glossary_block(terms),
@@ -346,6 +249,35 @@ def terminology_prompt(translation: str, source_lang: str, target_lang: str, ter
         "Return ONLY the corrected translation.",
     )
     return system, user
+
+
+def memory_prompt(chunk: str, final: str, source_lang: str, target_lang: str, known: str,
+                  overrides: Optional[Dict[str, str]] = None, profile: Optional[Dict] = None):
+    """Editor extracts rendering decisions from a finished passage into the job's shared memory."""
+    system = _system("editor_improve", overrides, source_lang, target_lang, profile)
+    user = _join(
+        f"From this finished {source_lang} → {target_lang} passage, list the rendering decisions later passages "
+        "must reuse for consistency: names of people, places and organisations; recurring terms or concepts NOT "
+        "already in the term base; titles; set phrases; and tone/form-of-address choices.",
+        f"Already recorded (do not repeat):\n{known or '(nothing yet)'}",
+        f"Source:\n\"\"\"\n{chunk}\n\"\"\"",
+        f"Final translation:\n\"\"\"\n{final}\n\"\"\"",
+        'Reply with ONLY a JSON object: {"decisions": [{"source": "…", "target": "…", "note": "optional, max 8 words"}]}. '
+        "At most 8 new decisions; an empty list is fine.",
+    )
+    return system, user
+
+
+def parse_decisions(text: str) -> List[Dict[str, str]]:
+    try:
+        data = parse_json(text)
+    except Exception:
+        return []
+    out = []
+    for item in data.get("decisions") or []:
+        if isinstance(item, dict) and str(item.get("source", "")).strip() and str(item.get("target", "")).strip():
+            out.append({k: str(item.get(k, "")).strip() for k in ("source", "target", "note")})
+    return out[:8]
 
 
 def clean_output(text: str) -> str:

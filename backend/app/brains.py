@@ -53,28 +53,39 @@ class RealBrain:
         }
 
     async def translate(self, domain, chunk, index, total, source_lang, target_lang, guidelines, terms, style_sheet,
-                        profile=None, context=None):
+                        profile=None, context=None, memory="", feedback=None):
         system, user = prompts.translator_prompt(
             domain, chunk, index, total, source_lang, target_lang, guidelines, terms, style_sheet,
-            overrides=self.prompt_overrides, profile=profile, context=context,
+            overrides=self.prompt_overrides, profile=profile, context=context, memory=memory, feedback=feedback,
         )
         return prompts.clean_output(await self.client.chat(system, user, temperature=self._temp(domain)))
 
     async def review(self, chunk, draft, source_lang, target_lang, guidelines, requirements, terms, style_sheet,
-                     profile=None):
+                     profile=None, memory="", round_no=1):
+        """Returns (notes, verdict) where verdict is 'pass' or 'revise'."""
         system, user = prompts.review_prompt(
             chunk, draft, source_lang, target_lang, guidelines, requirements, terms, style_sheet,
-            overrides=self.prompt_overrides, profile=profile,
+            overrides=self.prompt_overrides, profile=profile, memory=memory, round_no=round_no,
         )
-        return (await self.client.chat(system, user, temperature=0.3)).strip()
+        notes = (await self.client.chat(system, user, temperature=0.3)).strip()
+        return notes, prompts.parse_verdict(notes)
 
     async def improve(self, chunk, draft, review, source_lang, target_lang, terms, style_sheet,
-                      profile=None, context=None):
+                      profile=None, context=None, memory=""):
         system, user = prompts.improve_prompt(
             chunk, draft, review, source_lang, target_lang, terms, style_sheet,
-            overrides=self.prompt_overrides, profile=profile, context=context,
+            overrides=self.prompt_overrides, profile=profile, context=context, memory=memory,
         )
         return prompts.clean_output(await self.client.chat(system, user, temperature=0.4))
+
+    async def remember(self, chunk, final, source_lang, target_lang, known, profile=None):
+        system, user = prompts.memory_prompt(
+            chunk, final, source_lang, target_lang, known, overrides=self.prompt_overrides, profile=profile,
+        )
+        try:
+            return prompts.parse_decisions(await self.client.chat(system, user, temperature=0.2))
+        except Exception:
+            return []   # memory is best-effort; never fail a job over it
 
     async def check_terms(self, translation, source_lang, target_lang, terms, profile=None):
         system, user = prompts.terminology_prompt(
@@ -156,22 +167,32 @@ class DemoBrain:
         }
 
     async def translate(self, domain, chunk, index, total, source_lang, target_lang, guidelines, terms, style_sheet,
-                        profile=None, context=None):
+                        profile=None, context=None, memory="", feedback=None):
         await self._think(3.0, 5.0, len(chunk))
         return _apply_terms(chunk, terms)
 
+    async def remember(self, chunk, final, source_lang, target_lang, known, profile=None):
+        return []
+
     async def review(self, chunk, draft, source_lang, target_lang, guidelines, requirements, terms, style_sheet,
-                     profile=None):
+                     profile=None, memory="", round_no=1):
+        return await self._demo_review(chunk, terms, style_sheet, round_no)
+
+    async def _demo_review(self, chunk, terms, style_sheet, round_no):
         await self._think(1.5, 2.5, len(chunk) // 3)
         notes = ["- Accuracy: no omissions found.", "- Fluency: reads naturally; minor rhythm tweaks suggested."]
         if terms:
             notes.append(f"- Term base: {len(terms)} term(s) verified.")
         if style_sheet:
             notes.append("- Style sheet: checked capitalisation, punctuation and tone rules.")
-        return "(Demo review)\n" + "\n".join(notes)
+        # Demo: occasionally send a passage back once so the redo loop is visible in the office.
+        if round_no == 1 and random.random() < 0.3:
+            notes.append("- Naturalness: two sentences follow source word order; please recast.")
+            return "(Demo review)\n" + "\n".join(notes) + "\nVERDICT: REVISE", "revise"
+        return "(Demo review)\n" + "\n".join(notes) + "\nVERDICT: PASS", "pass"
 
     async def improve(self, chunk, draft, review, source_lang, target_lang, terms, style_sheet,
-                      profile=None, context=None):
+                      profile=None, context=None, memory=""):
         await self._think(1.5, 2.5, len(chunk) // 3)
         return draft
 

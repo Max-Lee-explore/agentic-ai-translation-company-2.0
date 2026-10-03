@@ -193,6 +193,23 @@ export class Choreographer {
         break;
       }
 
+      case 'revision_requested': {
+        // Editor sends a passage back; the translator who wrote it picks it up again.
+        this.stageLabel = `Editor sent passage ${ev.chunk + 1} back for a redo…`;
+        A.editor.say('Back to you — please redo.', 1.8);
+        const w = A[ev.worker];
+        if (w) {
+          w.setStatus('working');
+          w.say('On it!', 1.4);
+        }
+        this.playSfx?.('paper');
+        break;
+      }
+
+      case 'memory_updated':
+        A.editor.say('Noted for consistency.', 1.2);
+        break;
+
       case 'improve_done':
         break;
 
